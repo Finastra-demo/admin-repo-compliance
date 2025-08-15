@@ -88,16 +88,6 @@ jobs:
             *.log
           retention-days: 30
       
-      - name: Upload Results
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: compliance-report-${{ env.TARGET_ORG }}-${{ github.run_number }}
-          path: |
-            compliance-report.json
-            *.log
-          retention-days: 30
-      
       - name: Prepare Pages Directory
         if: success() && github.ref == 'refs/heads/main'
         run: |
