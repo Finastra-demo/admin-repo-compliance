@@ -165,28 +165,28 @@ jobs:
             --title "🚨 Repository Compliance Check Failed - $(date +%Y-%m-%d)" \
             --body "The automated repository compliance check failed on $(date).
 
-## 🔍 Details
-- **Workflow Run**: [View Details](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
-- **Organization**: ${{ env.TARGET_ORG }}
-- **Dry Run**: ${{ env.DRY_RUN }}
-- **Failed At**: $(date '+%Y-%m-%d %H:%M:%S')
-
-## 🛠️ Troubleshooting
-1. Check the workflow run logs for specific error messages
-2. Verify that the ORG_COMPLIANCE_TOKEN has proper permissions:
-   - repo scope for repository access
-   - read:org scope for organization access
-3. Ensure you are a member of the target organization
-4. Check if the organization has any access restrictions
-
-## 🔄 Next Steps
-- Review the workflow logs
-- Fix any identified issues
-- Re-run the workflow manually
-
----
-*This issue was created automatically by the Repository Compliance Checker*" \
-            --label "compliance-failure,automated" || \
-          gh issue create \
-            --title "🚨 Repository Compliance Check Failed - $(date +%Y-%m-%d)" \
-            --body "The automated repository compliance check failed. Please check the workflow run for details."
+          ## 🔍 Details
+          - **Workflow Run**: [View Details](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
+          - **Organization**: ${{ env.TARGET_ORG }}
+          - **Dry Run**: ${{ env.DRY_RUN }}
+          - **Failed At**: $(date '+%Y-%m-%d %H:%M:%S')
+          
+          ## 🛠️ Troubleshooting
+          1. Check the workflow run logs for specific error messages
+          2. Verify that the ORG_COMPLIANCE_TOKEN has proper permissions:
+             - repo scope for repository access
+             - read:org scope for organization access
+          3. Ensure you are a member of the target organization
+          4. Check if the organization has any access restrictions
+          
+          ## 🔄 Next Steps
+          - Review the workflow logs
+          - Fix any identified issues
+          - Re-run the workflow manually
+          
+          ---
+          *This issue was created automatically by the Repository Compliance Checker*" \
+                      --label "compliance-failure,automated" || \
+                    gh issue create \
+                      --title "🚨 Repository Compliance Check Failed - $(date +%Y-%m-%d)" \
+                      --body "The automated repository compliance check failed. Please check the workflow run for details."
