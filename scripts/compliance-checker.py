@@ -36,11 +36,29 @@ def main():
     print("🚀 Repository Compliance Checker Starting...")
     print(f"📅 Scan Date: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC")
     
-    # Initialize configuration
+    # GitHub Actions environment detection
+    is_github_actions = os.environ.get('GITHUB_ACTIONS') == 'true'
+    if is_github_actions:
+        print("🔧 Running in GitHub Actions environment")
+        print(f"🏃 Workflow: {os.environ.get('GITHUB_WORKFLOW', 'Unknown')}")
+        print(f"📋 Run ID: {os.environ.get('GITHUB_RUN_ID', 'Unknown')}")
+    
+    # Initialize configuration - NEVER hardcode tokens!
     token = os.environ.get('GITHUB_TOKEN')
     if not token:
         print("❌ Error: GITHUB_TOKEN environment variable is required")
-        print("💡 Set it with: export GITHUB_TOKEN=ghp_your_token_here")
+        if is_github_actions:
+            print("💡 In GitHub Actions, ensure secrets.ORG_COMPLIANCE_TOKEN is set")
+            print("💡 Default GITHUB_TOKEN has insufficient permissions for org scanning")
+        else:
+            print("💡 Set it with: export GITHUB_TOKEN=ghp_your_token_here")
+        exit(1)
+    
+    # Validate token is not the default GitHub Actions token
+    if is_github_actions and token.startswith('ghs_'):
+        print("⚠️ WARNING: Using default GitHub Actions token (ghs_)")
+        print("❌ This token cannot access organization repositories")
+        print("💡 Use a Personal Access Token stored in secrets.ORG_COMPLIANCE_TOKEN")
         exit(1)
     
     org_name = os.environ.get('TARGET_ORG', 'finastra-demo')
@@ -48,16 +66,25 @@ def main():
     
     print(f"🔍 Scanning organization: {org_name}")
     print(f"🧪 Dry run mode: {dry_run}")
+    print(f"🔑 Token type: {'PAT' if token.startswith('ghp_') else 'GitHub App' if token.startswith('ghs_') else 'Unknown'}")
     print(f"🔑 Token length: {len(token)} characters")
     
     try:
-        # Initialize GitHub client
-        g = Github(token)
+        # Initialize GitHub client with retry logic
+        g = Github(token, retry=3)
+        
+        # Enhanced token validation for GitHub Actions
+        validate_token_permissions(g, org_name, is_github_actions)
         
         # Test GitHub API access first
         try:
             rate_limit = g.get_rate_limit()
             print(f"📊 GitHub API rate limit: {rate_limit.core.remaining}/{rate_limit.core.limit}")
+            
+            # Check if rate limit is sufficient
+            if rate_limit.core.remaining < 100:
+                print(f"⚠️ Low rate limit remaining: {rate_limit.core.remaining}")
+                print(f"🕒 Rate limit resets at: {rate_limit.core.reset}")
         except Exception as e:
             print(f"⚠️ Could not check rate limit: {e}")
         
@@ -81,6 +108,13 @@ def main():
             print(f"   • Organization name is correct")
             print(f"   • Your token has access to this organization")
             print(f"   • You are a member of the organization")
+            
+            if is_github_actions:
+                # Set GitHub Actions output for failure
+                print(f"::error::Cannot access organization {org_name}: {e}")
+                set_github_actions_output('compliance_status', 'failed')
+                set_github_actions_output('error_message', str(e))
+            
             exit(1)
         
         # Define compliance rules
@@ -90,14 +124,20 @@ def main():
         
         # Get all repositories with improved pagination
         print(f"📊 Starting repository discovery...")
-        repositories = get_all_repositories_with_pagination(g, org, org_name)
+        repositories = get_all_repositories_optimized(g, org, org_name, is_github_actions)
         
         if not repositories:
             print(f"❌ No repositories found!")
             print(f"🔍 Troubleshooting suggestions:")
-            print(f"   • Check token permissions (repo, metadata)")
+            print(f"   • Check token permissions (repo, read:org)")
             print(f"   • Verify organization membership")
             print(f"   • Try with a personal access token")
+            
+            if is_github_actions:
+                print(f"::error::No repositories found in {org_name}")
+                set_github_actions_output('compliance_status', 'failed')
+                set_github_actions_output('error_message', 'No repositories found')
+            
             exit(1)
         
         total_repos = len(repositories)
@@ -172,136 +212,163 @@ def main():
         # Final recommendations
         print_recommendations(report, dry_run)
         
+        # GitHub Actions specific outputs
+        if is_github_actions:
+            set_github_actions_output('compliance_status', 'completed')
+            set_github_actions_output('total_repos', str(total_repos))
+            set_github_actions_output('compliant_repos', str(successful_scans))
+            set_github_actions_output('compliance_rate', str(report['summary']['compliance_rate']))
+            create_github_actions_summary(report)
+        
     except Exception as e:
         print(f"❌ Fatal error during compliance check: {e}")
+        
+        if is_github_actions:
+            print(f"::error::Compliance check failed: {e}")
+            set_github_actions_output('compliance_status', 'failed')
+            set_github_actions_output('error_message', str(e))
+        
         import traceback
         traceback.print_exc()
         exit(1)
 
-def get_all_repositories_with_pagination(github_client, org, org_name):
-    """Get all repositories with proper pagination handling"""
-    print(f"🔍 Fetching all repositories from {org_name}...")
+def validate_token_permissions(github_client, org_name, is_github_actions=False):
+    """Validate token has required permissions for organization scanning"""
+    print(f"🔐 Validating token permissions...")
     
-    repositories = []
-    
-    # Try different methods to get repositories
-    methods = [
-        ("Primary method (org.get_repos)", lambda: list(org.get_repos(type='all', sort='updated'))),
-        ("Public repos only", lambda: list(org.get_repos(type='public', sort='updated'))),
-        ("Member repos", lambda: list(org.get_repos(type='member', sort='updated'))),
-        ("Direct API method", lambda: get_repos_via_api(github_client, org_name))
-    ]
-    
-    for method_name, method_func in methods:
-        try:
-            print(f"🔄 Trying {method_name}...")
-            repos = method_func()
-            if repos:
-                repositories = repos
-                print(f"✅ {method_name} successful: {len(repos)} repositories")
-                break
-            else:
-                print(f"⚠️ {method_name} returned 0 repositories")
-        except Exception as e:
-            print(f"❌ {method_name} failed: {e}")
-            continue
-    
-    # If still no repositories, try to debug the issue
-    if not repositories:
-        print(f"🔍 Debugging repository access...")
-        debug_repository_access(github_client, org_name)
-    
-    return repositories
-
-def get_repos_via_api(github_client, org_name):
-    """Get repositories using direct API calls with pagination"""
-    repositories = []
-    page = 1
-    per_page = 100
-    
-    while True:
-        try:
-            # Use the low-level API for better control
-            headers, data = github_client._Github__requester.requestJsonAndCheck(
-                "GET", 
-                f"/orgs/{org_name}/repos",
-                parameters={
-                    'type': 'all',
-                    'sort': 'updated', 
-                    'direction': 'desc',
-                    'per_page': per_page,
-                    'page': page
-                }
-            )
-            
-            if not data:
-                break
-                
-            print(f"📄 API Page {page}: {len(data)} repositories")
-            
-            # Convert to Repository objects
-            for repo_data in data:
-                try:
-                    repo = github_client.get_repo(repo_data['full_name'])
-                    repositories.append(repo)
-                except Exception as e:
-                    print(f"⚠️ Could not access repo {repo_data['name']}: {e}")
-                    continue
-            
-            # If we got fewer than per_page results, we're done
-            if len(data) < per_page:
-                break
-                
-            page += 1
-            
-            # Safety check to prevent infinite loops
-            if page > 20:  # Max 2000 repositories
-                print(f"⚠️ Reached maximum page limit, stopping at page {page}")
-                break
-                
-        except Exception as e:
-            print(f"❌ API error on page {page}: {e}")
-            break
-    
-    return repositories
-
-def debug_repository_access(github_client, org_name):
-    """Debug repository access issues"""
     try:
-        # Check user info
+        # Check user authentication
         user = github_client.get_user()
         print(f"👤 Authenticated as: {user.login}")
         
-        # Check organization membership
+        # Check organization access
         try:
-            orgs = list(user.get_orgs())
-            org_names = [org.login for org in orgs]
-            print(f"🏢 User organizations: {org_names}")
+            org = github_client.get_organization(org_name)
+            print(f"🏢 Organization access: ✅ {org.login}")
             
-            if org_name not in org_names:
-                print(f"⚠️ User is not a member of {org_name}")
-                print(f"💡 You may only have access to specific repositories")
+            # Try to get a small sample of repositories
+            try:
+                repos_sample = list(org.get_repos(type='all'))[:3]
+                print(f"📊 Repository access: ✅ Can see {len(repos_sample)} repositories")
+                
+                # Show sample repo names
+                if repos_sample:
+                    print(f"📋 Sample repositories:")
+                    for repo in repos_sample:
+                        visibility = "private" if repo.private else "public"
+                        print(f"   • {repo.name} ({visibility})")
+                
+            except Exception as e:
+                print(f"📊 Repository access: ❌ Cannot list repositories")
+                print(f"💡 Error: {e}")
+                
+                if is_github_actions:
+                    print(f"🔧 GitHub Actions troubleshooting:")
+                    print(f"   • Ensure you're using secrets.ORG_COMPLIANCE_TOKEN")
+                    print(f"   • Verify PAT has 'repo' and 'read:org' scopes")
+                    print(f"   • Check organization member visibility settings")
+                
+                raise Exception(f"Cannot access repositories in {org_name}")
+            
         except Exception as e:
-            print(f"⚠️ Could not check organizations: {e}")
+            print(f"🏢 Organization access: ❌ {e}")
+            raise Exception(f"Cannot access organization {org_name}")
         
-        # Try to get repositories the user has access to
+        # Check token scopes if possible
         try:
-            user_repos = list(user.get_repos(affiliation='organization_member'))
-            org_repos = [repo for repo in user_repos if repo.organization and repo.organization.login == org_name]
-            print(f"📊 Accessible repos in {org_name}: {len(org_repos)}")
+            # This works for some token types
+            response = github_client._Github__requester._Requester__requestRaw("GET", "/user")[0]
+            scopes = response.get('x-oauth-scopes', '').split(', ') if response.get('x-oauth-scopes') else []
             
-            if org_repos:
-                print(f"📋 Accessible repositories:")
-                for repo in org_repos[:10]:  # Show first 10
-                    print(f"   • {repo.name} ({repo.visibility})")
-                if len(org_repos) > 10:
-                    print(f"   ... and {len(org_repos) - 10} more")
-                    
-        except Exception as e:
-            print(f"⚠️ Could not check user repositories: {e}")
-            
+            if scopes and scopes != ['']:
+                print(f"🔑 Token scopes: {', '.join(scopes)}")
+                
+                required_scopes = ['repo', 'read:org']
+                missing_scopes = [scope for scope in required_scopes if scope not in scopes]
+                
+                if missing_scopes:
+                    print(f"⚠️ Missing recommended scopes: {', '.join(missing_scopes)}")
+                else:
+                    print(f"✅ All required scopes present")
+            else:
+                print(f"🔑 Token scopes: Unable to determine")
+                
+        except Exception:
+            print(f"🔑 Token scopes: Unable to check")
+        
+        print(f"✅ Token validation successful")
+        
     except Exception as e:
-        print(f"❌ Debug failed: {e}")
+        print(f"❌ Token validation failed: {e}")
+        raise
+
+def get_all_repositories_optimized(github_client, org, org_name, is_github_actions=False):
+    """Optimized repository discovery for GitHub Actions environment"""
+    print(f"🔍 Fetching repositories from {org_name}...")
+    
+    repositories = []
+    
+    # Method 1: Direct organization repository access (best for org owners)
+    try:
+        print(f"🔄 Method 1: Organization repository access...")
+        
+        # Get all repositories with pagination
+        repos = []
+        page = 0
+        
+        while True:
+            try:
+                page_repos = org.get_repos(type='all', sort='updated').get_page(page)
+                if not page_repos:
+                    break
+                
+                repos.extend(page_repos)
+                print(f"   📄 Page {page + 1}: {len(page_repos)} repositories")
+                
+                page += 1
+                
+                # GitHub Actions has time limits, so add reasonable pagination limit
+                if page > 100:  # Max 3000 repos (30 per page default)
+                    print(f"   ⚠️ Reached pagination limit (100 pages)")
+                    break
+                    
+            except Exception as e:
+                print(f"   ❌ Error on page {page + 1}: {e}")
+                break
+        
+        repositories = repos
+        print(f"✅ Method 1 successful: {len(repositories)} repositories")
+        
+    except Exception as e:
+        print(f"❌ Method 1 failed: {e}")
+        
+        # Fallback: User's accessible organization repositories
+        try:
+            print(f"🔄 Fallback: User's organization repositories...")
+            user_repos = list(github_client.get_user().get_repos(affiliation='organization_member'))
+            org_repos = [repo for repo in user_repos if repo.organization and repo.organization.login == org_name]
+            
+            repositories = org_repos
+            print(f"✅ Fallback successful: {len(repositories)} repositories")
+            
+        except Exception as fallback_error:
+            print(f"❌ Fallback failed: {fallback_error}")
+    
+    if not repositories:
+        print(f"❌ No repositories discovered!")
+        print(f"🔍 This usually indicates:")
+        print(f"   • Token lacks required permissions")
+        print(f"   • Organization has no repositories")
+        print(f"   • User is not a member of the organization")
+        
+        # In GitHub Actions, this should fail the workflow
+        if is_github_actions:
+            raise Exception(f"No repositories found in {org_name}")
+    
+    # Sort by last activity for better reporting
+    repositories.sort(key=lambda r: r.pushed_at or r.created_at, reverse=True)
+    
+    return repositories
 
 def get_compliance_rules(org_name):
     """Get compliance rules based on organization"""
@@ -1577,6 +1644,62 @@ def print_recommendations(report, dry_run):
     print(f"\n📊 View the dashboard at:")
     org_name = report['metadata']['organization']
     print(f"   https://{org_name}.github.io/admin-repo-compliance")
+
+# GitHub Actions specific functions
+def set_github_actions_output(key, value):
+    """Set GitHub Actions step output"""
+    github_output = os.environ.get('GITHUB_OUTPUT')
+    if github_output:
+        with open(github_output, 'a') as f:
+            f.write(f"{key}={value}\n")
+
+def create_github_actions_summary(report):
+    """Create GitHub Actions job summary"""
+    github_step_summary = os.environ.get('GITHUB_STEP_SUMMARY')
+    if not github_step_summary:
+        return
+    
+    summary = report['summary']
+    metadata = report['metadata']
+    
+    summary_content = f"""
+# 📊 Repository Compliance Summary
+
+**Organization:** {metadata['organization']}  
+**Scan Date:** {metadata['scan_date']}  
+**Compliance Rate:** {summary['compliance_rate']}%
+
+## 📈 Results
+
+| Metric | Count | Percentage |
+|--------|-------|------------|
+| 📊 Total Repositories | {summary['total_repositories']} | 100% |
+| ✅ Compliant | {summary['compliant_repositories']} | {(summary['compliant_repositories']/summary['total_repositories']*100):.1f}% |
+| ❌ Non-Compliant | {summary['non_compliant_repositories']} | {(summary['non_compliant_repositories']/summary['total_repositories']*100):.1f}% |
+
+## 🎯 Next Steps
+
+"""
+    
+    if summary['compliance_rate'] == 100:
+        summary_content += "🎉 **Excellent!** All repositories are compliant.\n"
+    elif summary['compliance_rate'] >= 80:
+        summary_content += "✅ **Good compliance rate.** Focus on remaining issues.\n"
+    else:
+        summary_content += "⚠️ **Action needed.** Review non-compliant repositories.\n"
+    
+    summary_content += f"""
+## 📄 Artifacts
+
+- [📊 Compliance Dashboard](../compliance-dashboard.html)
+- [📋 Detailed JSON Report](../compliance-report.json)
+
+---
+*Generated by Repository Compliance Checker v2.0*
+"""
+    
+    with open(github_step_summary, 'w') as f:
+        f.write(summary_content)
 
 if __name__ == '__main__':
     main()
