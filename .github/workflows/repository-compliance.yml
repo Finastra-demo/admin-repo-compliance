@@ -23,12 +23,14 @@ on:
 env:
   TARGET_ORG: ${{ github.event.inputs.target_org || 'finastra-demo' }}
   DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
-  
+
 permissions:
   contents: read
   issues: write
   pull-requests: write
   actions: read
+  pages: write
+  id-token: write
 
 jobs:
   compliance-check:
@@ -42,7 +44,7 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.9'
+          python-version: '3.11'
       
       - name: Install Dependencies
         run: |
@@ -50,14 +52,37 @@ jobs:
       
       - name: Run Compliance Check
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.ORG_COMPLIANCE_TOKEN }}
         run: |
+          echo "🚀 Starting compliance check for organization: $TARGET_ORG"
+          echo "🧪 Dry run mode: $DRY_RUN"
           python scripts/compliance-checker.py
       
       - name: Upload Results
         uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: compliance-report
+          name: compliance-report-${{ env.TARGET_ORG }}-${{ github.run_number }}
           path: |
             compliance-report.json
             compliance-dashboard.html
+            *.log
+          retention-days: 30
+      
+      - name: Deploy Dashboard to GitHub Pages
+        if: success() && github.ref == 'refs/heads/main'
+        uses: actions/deploy-pages@v3
+        with:
+          path: '.'
+          token: ${{ secrets.ORG_COMPLIANCE_TOKEN }}
+      
+      - name: Create Issue Summary
+        if: failure()
+        env:
+          GITHUB_TOKEN: ${{ secrets.ORG_COMPLIANCE_TOKEN }}
+        run: |
+          # Create an issue if the compliance check fails
+          gh issue create \
+            --title "🚨 Repository Compliance Check Failed - $(date +%Y-%m-%d)" \
+            --body "The automated repository compliance check failed. Please check the [workflow run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details." \
+            --label "compliance-failure,automated"
