@@ -141,7 +141,11 @@ def check_repository_compliance(repo, org_name, required_prefix):
     
     # Check 5: Activity Status
     if repo.pushed_at:
-        days_since_push = (datetime.now() - repo.pushed_at).days
+        now_utc = datetime.now(timezone.utc)
+        pushed_at_utc = repo.pushed_at
+        if pushed_at_utc.tzinfo is None:
+            pushed_at_utc = pushed_at_utc.replace(tzinfo=timezone.utc)
+        days_since_push = (now_utc - pushed_at_utc).days
         if days_since_push > 365:
             issues['violations'].append(f'Repository inactive for {days_since_push} days (1+ years)')
             issues['labels'].append('activity:archived')
