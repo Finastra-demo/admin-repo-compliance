@@ -1,43 +1,129 @@
-# Simple workflow for deploying static content to GitHub Pages
-name: Deploy static content to Pages
+# Deploy Compliance Dashboard to GitHub Pages
+name: Deploy Compliance Dashboard to Pages
 
 on:
-  # Runs on pushes targeting the default branch
-  push:
-    branches: ["main"]
-
-  # Allows you to run this workflow manually from the Actions tab
+  # Trigger when compliance workflow completes
+  workflow_run:
+    workflows: ["Repository Compliance Checker"]
+    types:
+      - completed
+  
+  # Allow manual deployment
   workflow_dispatch:
 
-# Sets permissions of the GITHUB_TOKEN to allow deployment to GitHub Pages
+# Sets permissions for GitHub Pages deployment
 permissions:
   contents: read
   pages: write
   id-token: write
 
-# Allow only one concurrent deployment, skipping runs queued between the run in-progress and latest queued.
-# However, do NOT cancel in-progress runs as we want to allow these production deployments to complete.
+# Allow only one concurrent deployment
 concurrency:
   group: "pages"
   cancel-in-progress: false
 
 jobs:
-  # Single deploy job since we're just deploying
   deploy:
+    # Only deploy if compliance workflow succeeded
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
+    
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
+    
     runs-on: ubuntu-latest
+    
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+      
+      - name: Download Compliance Artifacts
+        if: github.event_name == 'workflow_run'
+        uses: actions/download-artifact@v4
+        with:
+          name: compliance-report
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ github.event.workflow_run.id }}
+      
+      - name: Verify Dashboard Files
+        run: |
+          echo "Checking for compliance dashboard files..."
+          ls -la
+          
+          # If dashboard doesn't exist, create a placeholder
+          if [ ! -f "compliance-dashboard.html" ]; then
+            echo "Creating placeholder dashboard..."
+            cat > compliance-dashboard.html << 'EOF'
+          <!DOCTYPE html>
+          <html>
+          <head>
+              <title>Compliance Dashboard</title>
+              <meta http-equiv="refresh" content="30">
+              <style>
+                  body { font-family: Arial, sans-serif; text-align: center; padding: 50px; }
+                  .loading { color: #0366d6; font-size: 1.2em; }
+              </style>
+          </head>
+          <body>
+              <h1>🏢 Repository Compliance Dashboard</h1>
+              <p class="loading">Dashboard is being generated...</p>
+              <p>The compliance checker is running. This page will automatically refresh.</p>
+              <p><small>If this message persists, check the Actions tab for workflow status.</small></p>
+          </body>
+          </html>
+          EOF
+          fi
+          
+          # Create index.html pointing to dashboard
+          cp compliance-dashboard.html index.html
+      
       - name: Setup Pages
         uses: actions/configure-pages@v5
-      - name: Upload artifact
+      
+      - name: Create Pages Directory
+        run: |
+          mkdir -p _site
+          cp compliance-dashboard.html _site/index.html
+          
+          # Copy JSON report if it exists
+          if [ -f "compliance-report.json" ]; then
+            cp compliance-report.json _site/
+          fi
+          
+          # Create a simple directory listing for additional files
+          cat > _site/files.html << 'EOF'
+          <!DOCTYPE html>
+          <html>
+          <head>
+              <title>Compliance Reports</title>
+              <style>
+                  body { font-family: Arial, sans-serif; padding: 20px; }
+                  a { display: block; margin: 10px 0; padding: 10px; background: #f6f8fa; text-decoration: none; border-radius: 6px; }
+              </style>
+          </head>
+          <body>
+              <h1>📊 Compliance Reports</h1>
+              <a href="index.html">📈 Compliance Dashboard (HTML)</a>
+              <a href="compliance-report.json">📄 Detailed Report (JSON)</a>
+              <a href="https://github.com/finastra-demo/admin-repo-compliance/actions">🔧 View Workflow Runs</a>
+          </body>
+          </html>
+          EOF
+          
+          echo "Dashboard structure:"
+          ls -la _site/
+      
+      - name: Upload Pages Artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          # Upload entire repository
-          path: '.'
+          path: '_site'
+      
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
+      
+      - name: Output Dashboard URL
+        run: |
+          echo "🎉 Compliance Dashboard deployed!"
+          echo "📊 Dashboard URL: ${{ steps.deployment.outputs.page_url }}"
+          echo "📄 JSON Report: ${{ steps.deployment.outputs.page_url }}compliance-report.json"
