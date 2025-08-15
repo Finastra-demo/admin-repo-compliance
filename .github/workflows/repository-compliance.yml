@@ -23,6 +23,12 @@ on:
 env:
   TARGET_ORG: ${{ github.event.inputs.target_org || 'finastra-demo' }}
   DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
+  
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+  actions: read
 
 jobs:
   compliance-check:
