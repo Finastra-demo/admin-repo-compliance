@@ -1,8 +1,9 @@
-# Deploy Compliance Dashboard to GitHub Pages
-name: Deploy Compliance Dashboard to Pages
+# Optional: Separate Deploy Workflow (if you prefer to keep deployment separate)
+# This is an alternative to the consolidated approach above
+name: Deploy Compliance Dashboard
 
 on:
-  # Trigger when compliance workflow completes
+  # Trigger after main workflow completes successfully
   workflow_run:
     workflows: ["Repository Compliance Checker"]
     types:
@@ -13,7 +14,6 @@ on:
   # Allow manual deployment
   workflow_dispatch:
 
-# Sets permissions for GitHub Pages deployment
 permissions:
   contents: read
   pages: write
@@ -27,8 +27,10 @@ concurrency:
 
 jobs:
   deploy:
-    # Deploy on success, or if manually triggered
-    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
+    # Only deploy on successful workflow runs or manual trigger
+    if: >
+      github.event_name == 'workflow_dispatch' || 
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
     
     environment:
       name: github-pages
@@ -40,31 +42,50 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
       
-      - name: Download Compliance Artifacts
+      - name: Download Artifacts from Main Workflow
         if: github.event_name == 'workflow_run'
-        uses: dawidd6/action-download-artifact@v3
-        with:
-          workflow: Repository Compliance Checker
-          name: compliance-report
-          path: ./artifacts
-          if_no_artifact_found: warn
-        continue-on-error: true
-      
-      - name: Verify and Prepare Dashboard Files
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          echo "🔍 Checking for compliance dashboard files..."
-          ls -la
-          ls -la artifacts/ 2>/dev/null || echo "No artifacts directory found"
+          echo "🔍 Downloading artifacts from workflow run ${{ github.event.workflow_run.id }}"
           
-          # Look for dashboard in artifacts
+          # Create artifacts directory
+          mkdir -p artifacts
+          
+          # Download artifacts using GitHub CLI (more reliable than third-party actions)
+          gh run download ${{ github.event.workflow_run.id }} \
+            --name compliance-report \
+            --dir artifacts/ || {
+            echo "⚠️ Could not download artifacts, checking for files in repo..."
+            ls -la
+          }
+          
+          echo "📁 Downloaded artifacts:"
+          ls -la artifacts/ || echo "No artifacts directory"
+      
+      - name: Prepare Dashboard Files
+        run: |
+          echo "🏗️ Preparing dashboard files..."
+          
+          # Look for dashboard files in different locations
+          dashboard_found=false
+          report_found=false
+          
+          # Check artifacts directory first
           if [ -f "artifacts/compliance-dashboard.html" ]; then
             echo "✅ Found dashboard in artifacts"
             cp artifacts/compliance-dashboard.html compliance-dashboard.html
-          elif [ -f "compliance-dashboard.html" ]; then
-            echo "✅ Found dashboard in workspace"
-          else
+            dashboard_found=true
+          fi
+          
+          if [ -f "artifacts/compliance-report.json" ]; then
+            echo "✅ Found report in artifacts"
+            cp artifacts/compliance-report.json compliance-report.json
+            report_found=true
+          fi
+          
+          # If no artifacts, create a placeholder dashboard
+          if [ "$dashboard_found" = false ]; then
             echo "⚠️ No dashboard found, creating placeholder..."
             cat > compliance-dashboard.html << 'EOF'
           <!DOCTYPE html>
@@ -72,26 +93,13 @@ jobs:
           <head>
               <meta charset="UTF-8">
               <meta name="viewport" content="width=device-width, initial-scale=1.0">
-              <title>Repository Compliance Dashboard</title>
+              <title>Compliance Dashboard - Processing</title>
               <meta http-equiv="refresh" content="60">
               <style>
-                  :root {
-                      --primary-color: #0366d6;
-                      --warning-color: #ffc107;
-                      --light-gray: #f8f9fa;
-                      --text-color: #24292f;
-                  }
-                  
-                  * {
-                      margin: 0;
-                      padding: 0;
-                      box-sizing: border-box;
-                  }
-                  
                   body {
                       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-                      background: var(--light-gray);
-                      color: var(--text-color);
+                      background: #f8f9fa;
+                      color: #24292f;
                       min-height: 100vh;
                       display: flex;
                       align-items: center;
@@ -99,170 +107,95 @@ jobs:
                       text-align: center;
                       padding: 20px;
                   }
-                  
                   .container {
                       background: white;
                       padding: 60px 40px;
                       border-radius: 12px;
                       box-shadow: 0 4px 12px rgba(0,0,0,0.1);
                       max-width: 600px;
-                      border-left: 6px solid var(--warning-color);
+                      border-left: 6px solid #ffc107;
                   }
-                  
-                  h1 {
-                      font-size: 2.5rem;
-                      margin-bottom: 20px;
-                      color: var(--primary-color);
-                  }
-                  
-                  .loading {
-                      color: var(--warning-color);
-                      font-size: 1.3rem;
-                      margin: 20px 0;
-                      font-weight: 600;
-                  }
-                  
-                  .description {
-                      font-size: 1.1rem;
-                      margin: 20px 0;
-                      line-height: 1.6;
-                  }
-                  
-                  .status-info {
-                      background: #fff3cd;
-                      border: 1px solid #ffeaa7;
-                      border-radius: 8px;
-                      padding: 20px;
-                      margin: 30px 0;
-                  }
-                  
-                  .links {
-                      margin-top: 30px;
-                  }
-                  
-                  .links a {
-                      display: inline-block;
-                      margin: 10px;
-                      padding: 12px 24px;
-                      background: var(--primary-color);
-                      color: white;
-                      text-decoration: none;
-                      border-radius: 6px;
-                      font-weight: 600;
-                      transition: background 0.2s;
-                  }
-                  
-                  .links a:hover {
-                      background: #0256cc;
-                  }
-                  
+                  h1 { font-size: 2.5rem; margin-bottom: 20px; color: #0366d6; }
+                  .loading { color: #ffc107; font-size: 1.3rem; margin: 20px 0; font-weight: 600; }
                   .spinner {
                       border: 4px solid #f3f3f3;
-                      border-top: 4px solid var(--warning-color);
+                      border-top: 4px solid #ffc107;
                       border-radius: 50%;
                       width: 40px;
                       height: 40px;
                       animation: spin 1s linear infinite;
                       margin: 20px auto;
                   }
-                  
                   @keyframes spin {
                       0% { transform: rotate(0deg); }
                       100% { transform: rotate(360deg); }
                   }
+                  .links { margin-top: 30px; }
+                  .links a {
+                      display: inline-block;
+                      margin: 10px;
+                      padding: 12px 24px;
+                      background: #0366d6;
+                      color: white;
+                      text-decoration: none;
+                      border-radius: 6px;
+                      font-weight: 600;
+                      transition: background 0.2s;
+                  }
+                  .links a:hover { background: #0256cc; }
               </style>
           </head>
           <body>
               <div class="container">
-                  <h1>🏢 Repository Compliance Dashboard</h1>
+                  <h1>🏢 Compliance Dashboard</h1>
                   <div class="spinner"></div>
                   <p class="loading">Dashboard is being generated...</p>
-                  <p class="description">The compliance checker is currently running and analyzing all repositories in the organization.</p>
-                  
-                  <div class="status-info">
-                      <h3>📊 What's happening?</h3>
-                      <p>• Scanning repositories for compliance issues<br>
-                      • Applying compliance labels<br>
-                      • Generating detailed reports<br>
-                      • Creating this dashboard</p>
-                  </div>
-                  
-                  <p><strong>This page will automatically refresh every minute.</strong></p>
-                  
+                  <p>The compliance checker is running and will update this dashboard shortly.</p>
+                  <p><strong>This page will refresh automatically.</strong></p>
                   <div class="links">
-                      <a href="https://github.com/finastra-demo/admin-repo-compliance/actions" target="_blank">🔧 View Workflow Status</a>
-                      <a href="https://github.com/finastra-demo/admin-repo-compliance/issues" target="_blank">📋 Track Issues</a>
+                      <a href="https://github.com/${{ github.repository }}/actions" target="_blank">🔧 View Workflows</a>
+                      <a href="https://github.com/${{ github.repository }}/issues" target="_blank">📋 Issues</a>
                   </div>
-                  
-                  <p><small style="margin-top: 20px; display: block; color: #666;">
-                      If this message persists for more than 10 minutes, check the Actions tab for workflow errors.
-                  </small></p>
               </div>
           </body>
           </html>
           EOF
           fi
           
-          # Look for JSON report
-          if [ -f "artifacts/compliance-report.json" ]; then
-            cp artifacts/compliance-report.json compliance-report.json
-            echo "✅ Found JSON report"
-          else
-            echo "⚠️ No JSON report found"
-          fi
-          
-          echo "📁 Current files:"
-          ls -la *.html *.json 2>/dev/null || echo "No dashboard/report files found"
+          echo "📁 Final files:"
+          ls -la *.html *.json 2>/dev/null || echo "No dashboard files found"
       
-      - name: Setup Pages
-        uses: actions/configure-pages@v5
-      
-      - name: Create Pages Directory Structure
+      - name: Create Pages Structure
         run: |
           echo "🏗️ Creating Pages directory structure..."
           mkdir -p _site
           
-          # Copy dashboard as index
+          # Copy main dashboard
           cp compliance-dashboard.html _site/index.html
           
-          # Copy JSON report if it exists
+          # Copy JSON report if available
           if [ -f "compliance-report.json" ]; then
             cp compliance-report.json _site/
-            echo "✅ JSON report included"
           fi
           
-          # Create a files listing page
+          # Create reports index
           cat > _site/reports.html << 'EOF'
           <!DOCTYPE html>
           <html lang="en">
           <head>
               <meta charset="UTF-8">
               <meta name="viewport" content="width=device-width, initial-scale=1.0">
-              <title>Compliance Reports - Finastra Demo</title>
+              <title>Compliance Reports</title>
               <style>
                   body { 
                       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-                      padding: 40px;
-                      background: #f8f9fa;
+                      padding: 40px; background: #f8f9fa;
                   }
-                  .container {
-                      max-width: 800px;
-                      margin: 0 auto;
-                      background: white;
-                      padding: 40px;
-                      border-radius: 12px;
-                      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-                  }
+                  .container { max-width: 800px; margin: 0 auto; background: white; padding: 40px; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
                   h1 { color: #0366d6; margin-bottom: 30px; }
                   .file-link { 
-                      display: block;
-                      margin: 15px 0;
-                      padding: 20px;
-                      background: #f6f8fa;
-                      text-decoration: none;
-                      border-radius: 8px;
-                      border-left: 4px solid #0366d6;
-                      transition: background 0.2s;
+                      display: block; margin: 15px 0; padding: 20px; background: #f6f8fa; text-decoration: none; 
+                      border-radius: 8px; border-left: 4px solid #0366d6; transition: background 0.2s;
                   }
                   .file-link:hover { background: #e1f5fe; }
                   .file-title { font-weight: 600; font-size: 1.1rem; color: #24292f; }
@@ -272,34 +205,28 @@ jobs:
           <body>
               <div class="container">
                   <h1>📊 Repository Compliance Reports</h1>
-                  <p>Access the latest compliance data and reports for Finastra Demo organization.</p>
-                  
                   <a href="index.html" class="file-link">
-                      <div class="file-title">📈 Interactive Compliance Dashboard</div>
-                      <div class="file-desc">Visual dashboard with charts, metrics, and repository details</div>
+                      <div class="file-title">📈 Interactive Dashboard</div>
+                      <div class="file-desc">Visual compliance dashboard with metrics and charts</div>
                   </a>
-                  
                   <a href="compliance-report.json" class="file-link">
-                      <div class="file-title">📄 Detailed JSON Report</div>
-                      <div class="file-desc">Machine-readable compliance data for automation and analysis</div>
+                      <div class="file-title">📄 JSON Report</div>
+                      <div class="file-desc">Raw compliance data for analysis</div>
                   </a>
-                  
-                  <a href="https://github.com/finastra-demo/admin-repo-compliance/actions" class="file-link" target="_blank">
-                      <div class="file-title">🔧 Workflow Runs</div>
-                      <div class="file-desc">View GitHub Actions workflow history and logs</div>
-                  </a>
-                  
-                  <a href="https://github.com/finastra-demo/admin-repo-compliance/issues" class="file-link" target="_blank">
-                      <div class="file-title">📋 Compliance Issues</div>
-                      <div class="file-desc">Track and manage repository compliance issues</div>
+                  <a href="https://github.com/${{ github.repository }}/actions" class="file-link" target="_blank">
+                      <div class="file-title">🔧 Workflows</div>
+                      <div class="file-desc">View workflow runs and logs</div>
                   </a>
               </div>
           </body>
           </html>
           EOF
           
-          echo "📁 Final Pages structure:"
+          echo "📁 Pages structure:"
           ls -la _site/
+      
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
       
       - name: Upload Pages Artifact
         uses: actions/upload-pages-artifact@v3
@@ -310,14 +237,8 @@ jobs:
         id: deployment
         uses: actions/deploy-pages@v4
       
-      - name: Output Dashboard URLs
+      - name: Output Success
         run: |
-          echo "🎉 Compliance Dashboard deployed successfully!"
-          echo ""
-          echo "📊 Main Dashboard: ${{ steps.deployment.outputs.page_url }}"
-          echo "📄 Reports Index: ${{ steps.deployment.outputs.page_url }}reports.html"
-          echo "📋 JSON Data: ${{ steps.deployment.outputs.page_url }}compliance-report.json"
-          echo ""
-          echo "🔗 Quick Links:"
-          echo "• Dashboard: https://finastra-demo.github.io/admin-repo-compliance/"
-          echo "• Reports: https://finastra-demo.github.io/admin-repo-compliance/reports.html"
+          echo "🎉 Dashboard deployed successfully!"
+          echo "📊 URL: ${{ steps.deployment.outputs.page_url }}"
+          echo "📄 Reports: ${{ steps.deployment.outputs.page_url }}reports.html"
