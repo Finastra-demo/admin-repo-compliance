@@ -77,40 +77,138 @@ jobs:
           echo "🧪 Dry run mode: $DRY_RUN"
           python scripts/compliance-checker.py
       
+      # FIX: Use consistent artifact names
       - name: Upload Results
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: compliance-report-${{ env.TARGET_ORG }}-${{ github.run_number }}
+          name: compliance-report  # Fixed: Use consistent name
           path: |
             compliance-report.json
             compliance-dashboard.html
             *.log
           retention-days: 30
       
-      - name: Prepare Pages Directory
+      # FIX: Combine dashboard preparation and pages deployment in main workflow
+      - name: Prepare and Deploy to Pages
         if: success() && github.ref == 'refs/heads/main'
         run: |
-          mkdir -p pages
-          cp compliance-dashboard.html pages/index.html
-          echo "Dashboard prepared for Pages deployment"
+          echo "🏗️ Preparing Pages deployment..."
+          mkdir -p _site
+          
+          # Copy dashboard files
+          if [ -f "compliance-dashboard.html" ]; then
+            cp compliance-dashboard.html _site/index.html
+            echo "✅ Dashboard copied"
+          else
+            echo "❌ Dashboard file not found"
+            exit 1
+          fi
+          
+          # Copy JSON report if it exists
+          if [ -f "compliance-report.json" ]; then
+            cp compliance-report.json _site/
+            echo "✅ JSON report copied"
+          fi
+          
+          # Create reports index page
+          cat > _site/reports.html << 'EOF'
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+              <meta charset="UTF-8">
+              <meta name="viewport" content="width=device-width, initial-scale=1.0">
+              <title>Compliance Reports - ${{ env.TARGET_ORG }}</title>
+              <style>
+                  body { 
+                      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                      padding: 40px;
+                      background: #f8f9fa;
+                  }
+                  .container {
+                      max-width: 800px;
+                      margin: 0 auto;
+                      background: white;
+                      padding: 40px;
+                      border-radius: 12px;
+                      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+                  }
+                  h1 { color: #0366d6; margin-bottom: 30px; }
+                  .file-link { 
+                      display: block;
+                      margin: 15px 0;
+                      padding: 20px;
+                      background: #f6f8fa;
+                      text-decoration: none;
+                      border-radius: 8px;
+                      border-left: 4px solid #0366d6;
+                      transition: background 0.2s;
+                  }
+                  .file-link:hover { background: #e1f5fe; }
+                  .file-title { font-weight: 600; font-size: 1.1rem; color: #24292f; }
+                  .file-desc { color: #586069; margin-top: 5px; }
+              </style>
+          </head>
+          <body>
+              <div class="container">
+                  <h1>📊 Repository Compliance Reports</h1>
+                  <p>Access the latest compliance data and reports for ${{ env.TARGET_ORG }} organization.</p>
+                  
+                  <a href="index.html" class="file-link">
+                      <div class="file-title">📈 Interactive Compliance Dashboard</div>
+                      <div class="file-desc">Visual dashboard with charts, metrics, and repository details</div>
+                  </a>
+                  
+                  <a href="compliance-report.json" class="file-link">
+                      <div class="file-title">📄 Detailed JSON Report</div>
+                      <div class="file-desc">Machine-readable compliance data for automation and analysis</div>
+                  </a>
+                  
+                  <a href="https://github.com/${{ env.TARGET_ORG }}/admin-repo-compliance/actions" class="file-link" target="_blank">
+                      <div class="file-title">🔧 Workflow Runs</div>
+                      <div class="file-desc">View GitHub Actions workflow history and logs</div>
+                  </a>
+                  
+                  <a href="https://github.com/${{ env.TARGET_ORG }}/admin-repo-compliance/issues" class="file-link" target="_blank">
+                      <div class="file-title">📋 Compliance Issues</div>
+                      <div class="file-desc">Track and manage repository compliance issues</div>
+                  </a>
+              </div>
+          </body>
+          </html>
+          EOF
+          
+          echo "📁 Pages structure ready:"
+          ls -la _site/
       
-      - name: Setup GitHub Pages
+      - name: Setup Pages
         if: success() && github.ref == 'refs/heads/main'
-        uses: actions/configure-pages@v4
+        uses: actions/configure-pages@v5
       
-      - name: Upload Dashboard to Pages
+      - name: Upload to Pages
         if: success() && github.ref == 'refs/heads/main'
         uses: actions/upload-pages-artifact@v3
         with:
-          path: './pages'
+          path: '_site'
       
       - name: Deploy to GitHub Pages
         if: success() && github.ref == 'refs/heads/main'
         id: deployment
         uses: actions/deploy-pages@v4
       
-      - name: Create Required Labels
+      - name: Output Results
+        if: success() && github.ref == 'refs/heads/main'
+        run: |
+          echo "🎉 Compliance check completed successfully!"
+          echo ""
+          echo "📊 Dashboard: ${{ steps.deployment.outputs.page_url }}"
+          echo "📄 Reports: ${{ steps.deployment.outputs.page_url }}reports.html"
+          echo "📋 JSON Data: ${{ steps.deployment.outputs.page_url }}compliance-report.json"
+          
+          # Set outputs for other workflows if needed
+          echo "dashboard_url=${{ steps.deployment.outputs.page_url }}" >> $GITHUB_OUTPUT
+      
+      - name: Handle Failure - Create Labels
         if: failure()
         env:
           GITHUB_TOKEN: ${{ secrets.ORG_COMPLIANCE_TOKEN }}
@@ -143,7 +241,7 @@ jobs:
           
           echo "Label creation completed"
       
-      - name: Create Issue Summary
+      - name: Create Failure Issue
         if: failure()
         env:
           GITHUB_TOKEN: ${{ secrets.ORG_COMPLIANCE_TOKEN }}
@@ -176,7 +274,7 @@ jobs:
           
           ---
           *This issue was created automatically by the Repository Compliance Checker*" \
-                      --label "compliance-failure,automated" || \
-                    gh issue create \
-                      --title "🚨 Repository Compliance Check Failed - $(date +%Y-%m-%d)" \
-                      --body "The automated repository compliance check failed. Please check the workflow run for details."
+            --label "compliance-failure,automated" || \
+          gh issue create \
+            --title "🚨 Repository Compliance Check Failed - $(date +%Y-%m-%d)" \
+            --body "The automated repository compliance check failed. Please check the workflow run for details."
