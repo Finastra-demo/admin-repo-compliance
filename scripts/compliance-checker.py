@@ -82,17 +82,29 @@ def main():
         # Test GitHub API access first
         try:
             rate_limit = g.get_rate_limit()
-            print(f"📊 GitHub API rate limit: {rate_limit.core.remaining}/{rate_limit.core.limit}")
+            # Fix: Handle different PyGithub library versions
+            try:
+                remaining = rate_limit.core.remaining
+                limit = rate_limit.core.limit
+                reset_time = rate_limit.core.reset
+            except AttributeError:
+                # Fallback for older PyGithub versions
+                remaining = rate_limit.rate.remaining
+                limit = rate_limit.rate.limit  
+                reset_time = rate_limit.rate.reset
+            
+            print(f"📊 GitHub API rate limit: {remaining}/{limit}")
             
             # Check if rate limit is sufficient for assignment (requires more API calls)
             min_required = 200 if enable_assignment else 100
-            if rate_limit.core.remaining < min_required:
-                print(f"⚠️ Low rate limit remaining: {rate_limit.core.remaining}")
-                print(f"🕒 Rate limit resets at: {rate_limit.core.reset}")
+            if remaining < min_required:
+                print(f"⚠️ Low rate limit remaining: {remaining}")
+                print(f"🕒 Rate limit resets at: {reset_time}")
                 if enable_assignment:
                     print("⚠️ Consider disabling auto-assignment to reduce API usage")
         except Exception as e:
             print(f"⚠️ Could not check rate limit: {e}")
+            print("ℹ️ Continuing without rate limit check...")
         
         # Get organization
         try:
@@ -804,8 +816,7 @@ def get_compliance_rules(org_name):
         # Generic rules for other organizations
         return {
             'required_prefixes': ['a-', 'e-', 't-', 'p-'],
-            'naming_pattern': r'^[a-z]+-[a-z0-9]+-[a-z0-9-]+$'
-,
+            'naming_pattern': r'^[a-z]+-[a-z0-9]+-[a-z0-9-]+$',
             'description': 'Generic organization rules - standard prefixed naming'
         }
 
@@ -1419,10 +1430,25 @@ def generate_html_dashboard(report):
     summary = report['summary']
     analysis = report['analysis']
     
-    # Calculate additional metrics
-    total_violations = sum(analysis['issue_categories'].values())
-    critical_issues = sum(count for label, count in analysis['label_distribution'].items() 
+    # Calculate additional metrics with safety checks
+    total_violations = sum(analysis['issue_categories'].values()) if analysis.get('issue_categories') else 0
+    critical_issues = sum(count for label, count in analysis.get('label_distribution', {}).items() 
                          if label.startswith(('missing:readme', 'security:')))
+    
+    # Add status badge based on compliance rate
+    compliance_rate = summary['compliance_rate']
+    if compliance_rate >= 90:
+        status_class = "status-excellent"
+        status_text = "Excellent Compliance"
+    elif compliance_rate >= 70:
+        status_class = "status-good"
+        status_text = "Good Compliance"
+    elif compliance_rate >= 50:
+        status_class = "status-needs-improvement"  
+        status_text = "Needs Improvement"
+    else:
+        status_class = "status-critical"
+        status_text = "Critical - Action Required"
     
     html_content = f"""<!DOCTYPE html>
 <html lang="en">
@@ -1431,7 +1457,6 @@ def generate_html_dashboard(report):
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Repository Compliance Dashboard - {metadata['organization']}</title>
     <style>
-        /* Include all existing CSS styles */
         :root {{
             --primary-color: #0366d6;
             --success-color: #28a745;
@@ -1480,6 +1505,26 @@ def generate_html_dashboard(report):
             font-weight: 700;
         }}
         
+        .header .subtitle {{
+            color: var(--muted-color);
+            font-size: 1.1rem;
+            margin-bottom: 15px;
+        }}
+        
+        .status-badge {{
+            display: inline-block;
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-weight: 600;
+            font-size: 1rem;
+            margin: 5px;
+        }}
+        
+        .status-excellent {{ background: #d4edda; color: #155724; }}
+        .status-good {{ background: #d1ecf1; color: #0c5460; }}
+        .status-needs-improvement {{ background: #fff3cd; color: #856404; }}
+        .status-critical {{ background: #f8d7da; color: #721c24; }}
+        
         .assignment-badge {{
             background: linear-gradient(135deg, #e3f2fd, #bbdefb);
             color: var(--primary-color);
@@ -1487,8 +1532,154 @@ def generate_html_dashboard(report):
             border-radius: 20px;
             font-weight: 600;
             font-size: 0.9rem;
-            margin: 10px 5px;
-            display: inline-block;
+            margin: 5px;
+        }}
+        
+        .metrics-grid {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 25px;
+            margin-bottom: 40px;
+        }}
+        
+        .metric-card {{
+            background: white;
+            padding: 30px;
+            border-radius: 12px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            text-align: center;
+            border-left: 6px solid var(--primary-color);
+            transition: transform 0.2s ease;
+        }}
+        
+        .metric-card:hover {{
+            transform: translateY(-2px);
+        }}
+        
+        .metric-card.success {{ border-left-color: var(--success-color); }}
+        .metric-card.danger {{ border-left-color: var(--danger-color); }}
+        .metric-card.warning {{ border-left-color: var(--warning-color); }}
+        
+        .metric-card h3 {{
+            font-size: 0.9rem;
+            color: var(--muted-color);
+            margin-bottom: 15px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            font-weight: 600;
+        }}
+        
+        .metric-card .value {{
+            font-size: 3rem;
+            font-weight: 700;
+            margin-bottom: 10px;
+            line-height: 1;
+        }}
+        
+        .metric-card .percentage {{
+            font-size: 1.2rem;
+            color: var(--muted-color);
+            font-weight: 500;
+        }}
+        
+        .success {{ color: var(--success-color); }}
+        .danger {{ color: var(--danger-color); }}
+        .warning {{ color: var(--warning-color); }}
+        .primary {{ color: var(--primary-color); }}
+        
+        .charts-section {{
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 30px;
+            margin-bottom: 40px;
+        }}
+        
+        .chart-card {{
+            background: white;
+            padding: 30px;
+            border-radius: 12px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            border-left: 6px solid var(--info-color);
+        }}
+        
+        .chart-card h3 {{
+            margin-bottom: 25px;
+            color: var(--text-color);
+            font-size: 1.3rem;
+            font-weight: 600;
+        }}
+        
+        .no-data {{
+            text-align: center;
+            color: var(--muted-color);
+            font-style: italic;
+            padding: 20px;
+        }}
+        
+        .violation-item, .label-item {{
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px 0;
+            border-bottom: 1px solid var(--border-color);
+        }}
+        
+        .violation-item:last-child, .label-item:last-child {{
+            border-bottom: none;
+        }}
+        
+        .count-badge {{
+            background: var(--light-gray);
+            color: var(--text-color);
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-weight: 600;
+            font-size: 0.9rem;
+        }}
+        
+        .success-message {{
+            background: linear-gradient(135deg, #d4edda, #c3e6cb);
+            color: #155724;
+            padding: 40px;
+            border-radius: 12px;
+            text-align: center;
+            margin: 30px 0;
+            border-left: 6px solid var(--success-color);
+        }}
+        
+        .success-message h2 {{
+            font-size: 2rem;
+            margin-bottom: 15px;
+        }}
+        
+        .footer {{
+            text-align: center;
+            margin-top: 50px;
+            padding: 30px;
+            background: white;
+            border-radius: 12px;
+            color: var(--muted-color);
+            border-left: 6px solid var(--primary-color);
+        }}
+        
+        .footer a {{
+            color: var(--primary-color);
+            text-decoration: none;
+            font-weight: 600;
+        }}
+        
+        @media (max-width: 768px) {{
+            .charts-section {{
+                grid-template-columns: 1fr;
+            }}
+            
+            .metrics-grid {{
+                grid-template-columns: 1fr;
+            }}
+            
+            .header h1 {{
+                font-size: 2rem;
+            }}
         }}
     </style>
 </head>
@@ -1498,14 +1689,147 @@ def generate_html_dashboard(report):
             <h1>🏢 {metadata['organization']}</h1>
             <h2>Repository Compliance Dashboard</h2>
             <p class="subtitle">Auto-detected organization • Last Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} UTC</p>
+            <div class="status-badge {status_class}">
+                {status_text} ({compliance_rate}%)
+            </div>
             <div class="assignment-badge">👥 Auto-Assignment Enabled</div>
         </div>
-        <!-- Rest of HTML content remains same as original -->
+        
+        <div class="metrics-grid">
+            <div class="metric-card">
+                <h3>📊 Total Repositories</h3>
+                <div class="value primary">{summary['total_repositories']}</div>
+                <div class="percentage">Scanned</div>
+            </div>
+            
+            <div class="metric-card success">
+                <h3>✅ Compliant</h3>
+                <div class="value success">{summary['compliant_repositories']}</div>
+                <div class="percentage">({(summary['compliant_repositories']/summary['total_repositories']*100) if summary['total_repositories'] > 0 else 0:.1f}%)</div>
+            </div>
+            
+            <div class="metric-card danger">
+                <h3>❌ Non-Compliant</h3>
+                <div class="value danger">{summary['non_compliant_repositories']}</div>
+                <div class="percentage">({(summary['non_compliant_repositories']/summary['total_repositories']*100) if summary['total_repositories'] > 0 else 0:.1f}%)</div>
+            </div>
+            
+            <div class="metric-card warning">
+                <h3>🔥 Critical Issues</h3>
+                <div class="value warning">{critical_issues}</div>
+                <div class="percentage">Security & Core</div>
+            </div>
+        </div>
+        
+        <div class="charts-section">
+            <div class="chart-card">
+                <h3>🚨 Top Violation Types</h3>"""
+    
+    # Add violation types with safety checks
+    if analysis.get('top_violations'):
+        for violation_type, count in analysis['top_violations'][:8]:
+            percentage = (count / total_violations * 100) if total_violations > 0 else 0
+            html_content += f"""
+                <div class="violation-item">
+                    <span style="font-weight: 500;">{violation_type.title()}</span>
+                    <span class="count-badge">{count} ({percentage:.1f}%)</span>
+                </div>"""
+    else:
+        html_content += '<div class="no-data">No violation data available</div>'
+    
+    html_content += """
+            </div>
+            
+            <div class="chart-card">
+                <h3>🏷️ Applied Labels</h3>"""
+    
+    # Add labels with safety checks
+    label_colors = {
+        'naming': '#f66a0a',
+        'missing': '#d73a49', 
+        'security': '#d73a49',
+        'activity': '#24292e',
+        'quality': '#6a737d'
+    }
+    
+    if analysis.get('label_distribution'):
+        for label, count in sorted(analysis['label_distribution'].items(), key=lambda x: x[1], reverse=True)[:8]:
+            label_category = label.split(':')[0]
+            color = label_colors.get(label_category, '#6a737d')
+            
+            html_content += f"""
+                <div class="label-item">
+                    <span style="background-color: {color}; color: white; padding: 6px 12px; border-radius: 6px; font-size: 0.85rem; font-weight: 600; font-family: 'Courier New', monospace;">{label}</span>
+                    <span class="count-badge">{count}</span>
+                </div>"""
+    else:
+        html_content += '<div class="no-data">No label data available</div>'
+    
+    html_content += """
+            </div>
+        </div>"""
+    
+    # Add repositories section or success message
+    if report.get('repositories'):
+        html_content += """
+        <div style="background: white; padding: 30px; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); border-left: 6px solid var(--warning-color);">
+            <h2 style="margin-bottom: 25px; color: var(--text-color); font-size: 1.5rem; font-weight: 600;">🚨 Non-Compliant Repositories</h2>"""
+        
+        # Show repositories sorted by number of violations
+        sorted_repos = sorted(report['repositories'], key=lambda x: len(x.get('violations', [])), reverse=True)
+        
+        for repo in sorted_repos[:10]:  # Show top 10 most problematic
+            html_content += f"""
+            <div style="border: 1px solid var(--border-color); border-radius: 10px; padding: 25px; margin-bottom: 20px; background: #fafbfc;">
+                <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 20px;">
+                    <div style="font-size: 1.3rem; font-weight: 600;">
+                        <a href="{repo['url']}" target="_blank" style="color: var(--primary-color); text-decoration: none;">{repo['name']}</a>
+                    </div>
+                    <div style="font-size: 0.9rem; color: var(--muted-color); text-align: right;">
+                        <strong>{repo['visibility'].title()}</strong><br>
+                        {repo['size']}KB • {repo['language']}<br>
+                        {len(repo.get('violations', []))} issues
+                    </div>
+                </div>
+                <div style="margin-top: 20px;">"""
+            
+            for violation in repo.get('violations', []):
+                html_content += f'<span style="display: inline-block; background: #fff5f5; color: #c53030; padding: 6px 12px; border-radius: 6px; font-size: 0.85rem; margin: 3px; border: 1px solid #fed7d7; font-weight: 500;">❌ {violation}</span>'
+            
+            html_content += """
+                </div>
+            </div>"""
+        
+        if len(report['repositories']) > 10:
+            html_content += f"""
+            <div style="text-align: center; padding: 20px; color: var(--muted-color);">
+                <em>... and {len(report['repositories']) - 10} more non-compliant repositories</em>
+            </div>"""
+        
+        html_content += "</div>"
+    else:
+        html_content += """
+        <div class="success-message">
+            <h2>🎉 Congratulations!</h2>
+            <p style="font-size: 1.3rem; margin-top: 15px;">All repositories are compliant with governance standards.</p>
+            <p style="margin-top: 10px;">Your organization maintains excellent repository hygiene!</p>
+        </div>"""
+    
+    html_content += f"""
+        <div class="footer">
+            <p><strong>Repository Compliance Checker v3.0 with Auto-Assignment</strong></p>
+            <p>Generated automatically for {metadata['organization']} • Next scan: Tomorrow at 02:00 UTC</p>
+            <p style="margin-top: 15px;">
+                <a href="compliance-report.json" target="_blank">📄 Download JSON Report</a> |
+                <a href="https://github.com/{metadata['organization']}/admin-repo-compliance/actions" target="_blank">🔧 View Workflow Runs</a> |
+                <a href="https://github.com/{metadata['organization']}/admin-repo-compliance/issues" target="_blank">📋 Track Issues</a>
+            </p>
+        </div>
     </div>
 </body>
 </html>"""
     
-    # Save HTML dashboard (abbreviated for space - use full version from original)
+    # Save HTML dashboard
     with open('compliance-dashboard.html', 'w', encoding='utf-8') as f:
         f.write(html_content)
 
