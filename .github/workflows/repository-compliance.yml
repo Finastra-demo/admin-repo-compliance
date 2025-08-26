@@ -1,14 +1,14 @@
-name: Repository Compliance Checker
+name: Repository Compliance Checker with Auto-Assignment
 
 on:
   workflow_dispatch:
     inputs:
-      target_org:
-        description: 'Organization to scan'
-        required: false
-        default: 'finastra-demo'
       dry_run:
         description: 'Dry run - no changes made'
+        type: boolean
+        default: true
+      enable_assignment:
+        description: 'Enable auto-assignment of issues'
         type: boolean
         default: true
       fix_issues:
@@ -21,8 +21,9 @@ on:
     - cron: '0 2 * * *'
 
 env:
-  TARGET_ORG: ${{ github.event.inputs.target_org || 'finastra-demo' }}
+  # Organization is auto-detected from current repository
   DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
+  ENABLE_AUTO_ASSIGNMENT: ${{ github.event.inputs.enable_assignment || 'true' }}
 
 permissions:
   contents: read
@@ -34,7 +35,7 @@ permissions:
 
 jobs:
   compliance-check:
-    name: Repository Compliance Check
+    name: Repository Compliance Check with Auto-Assignment
     runs-on: ubuntu-latest
     
     steps:
@@ -50,50 +51,78 @@ jobs:
         run: |
           pip install PyGithub requests
       
+      - name: Detect Organization
+        id: detect-org
+        run: |
+          # Extract organization from GITHUB_REPOSITORY
+          ORG_NAME=$(echo "$GITHUB_REPOSITORY" | cut -d'/' -f1)
+          echo "Detected organization: $ORG_NAME"
+          echo "TARGET_ORG=$ORG_NAME" >> $GITHUB_ENV
+          echo "org_name=$ORG_NAME" >> $GITHUB_OUTPUT
+      
       - name: Validate Token Access
         env:
           GITHUB_TOKEN: ${{ secrets.ORG_COMPLIANCE_TOKEN }}
         run: |
-          echo "🔍 Testing token access..."
+          echo "🔍 Testing token access for organization: $TARGET_ORG"
           
           # Test basic authentication
-          curl -s -H "Authorization: token $GITHUB_TOKEN" \
+          AUTH_USER=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
                -H "Accept: application/vnd.github.v3+json" \
-               https://api.github.com/user | jq -r '.login // "ERROR"'
+               https://api.github.com/user | jq -r '.login // "ERROR"')
+          
+          if [ "$AUTH_USER" = "ERROR" ]; then
+            echo "❌ Token authentication failed"
+            exit 1
+          else
+            echo "✅ Authenticated as: $AUTH_USER"
+          fi
           
           # Test organization access
-          curl -s -H "Authorization: token $GITHUB_TOKEN" \
-               "https://api.github.com/orgs/$TARGET_ORG" | jq -r '.login // "ERROR"'
+          ORG_CHECK=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+               "https://api.github.com/orgs/$TARGET_ORG" | jq -r '.login // "ERROR"')
+          
+          if [ "$ORG_CHECK" = "ERROR" ]; then
+            echo "❌ Cannot access organization: $TARGET_ORG"
+            exit 1
+          else
+            echo "✅ Organization access confirmed: $ORG_CHECK"
+          fi
           
           # Test repository listing
-          curl -s -H "Authorization: token $GITHUB_TOKEN" \
-               "https://api.github.com/orgs/$TARGET_ORG/repos?per_page=1" | jq -r 'length'
+          REPO_COUNT=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+               "https://api.github.com/orgs/$TARGET_ORG/repos?per_page=1" | jq -r 'length')
+          
+          echo "📊 Repository access test: $REPO_COUNT repositories visible"
       
-      - name: Run Compliance Check
+      - name: Run Compliance Check with Auto-Assignment
         env:
           GITHUB_TOKEN: ${{ secrets.ORG_COMPLIANCE_TOKEN }}
         run: |
-          echo "🚀 Starting compliance check for organization: $TARGET_ORG"
+          echo "🚀 Starting compliance check with auto-assignment"
+          echo "🏢 Organization: $TARGET_ORG (auto-detected)"
           echo "🧪 Dry run mode: $DRY_RUN"
+          echo "👥 Auto-assignment: $ENABLE_AUTO_ASSIGNMENT"
+          echo "🔧 Fix issues: ${{ github.event.inputs.fix_issues || 'false' }}"
+          echo ""
+          
           python scripts/compliance-checker.py
       
-      # FIX: Use consistent artifact names
       - name: Upload Results
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: compliance-report  # Fixed: Use consistent name
+          name: compliance-report
           path: |
             compliance-report.json
             compliance-dashboard.html
             *.log
           retention-days: 30
       
-      # FIX: Combine dashboard preparation and pages deployment in main workflow
       - name: Prepare and Deploy to Pages
         if: success() && github.ref == 'refs/heads/main'
         run: |
-          echo "🏗️ Preparing Pages deployment..."
+          echo "🏗️ Preparing Pages deployment for $TARGET_ORG..."
           mkdir -p _site
           
           # Copy dashboard files
@@ -111,67 +140,201 @@ jobs:
             echo "✅ JSON report copied"
           fi
           
-          # Create reports index page
+          # Create enhanced reports index page
           cat > _site/reports.html << 'EOF'
           <!DOCTYPE html>
           <html lang="en">
           <head>
               <meta charset="UTF-8">
               <meta name="viewport" content="width=device-width, initial-scale=1.0">
-              <title>Compliance Reports - ${{ env.TARGET_ORG }}</title>
+              <title>Compliance Reports - Repository Governance Dashboard</title>
               <style>
+                  :root {
+                      --primary-color: #0366d6;
+                      --success-color: #28a745;
+                      --warning-color: #ffc107;
+                      --light-gray: #f8f9fa;
+                      --border-color: #e1e4e8;
+                      --text-color: #24292f;
+                      --muted-color: #586069;
+                  }
+                  
+                  * {
+                      margin: 0;
+                      padding: 0;
+                      box-sizing: border-box;
+                  }
+                  
                   body { 
                       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
                       padding: 40px;
-                      background: #f8f9fa;
+                      background: var(--light-gray);
+                      color: var(--text-color);
+                      line-height: 1.6;
                   }
+                  
                   .container {
-                      max-width: 800px;
+                      max-width: 1000px;
                       margin: 0 auto;
                       background: white;
-                      padding: 40px;
-                      border-radius: 12px;
-                      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+                      padding: 50px;
+                      border-radius: 16px;
+                      box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+                      border-left: 6px solid var(--primary-color);
                   }
-                  h1 { color: #0366d6; margin-bottom: 30px; }
+                  
+                  h1 { 
+                      color: var(--primary-color); 
+                      margin-bottom: 20px;
+                      font-size: 2.5rem;
+                      text-align: center;
+                  }
+                  
+                  .subtitle {
+                      text-align: center;
+                      color: var(--muted-color);
+                      margin-bottom: 40px;
+                      font-size: 1.2rem;
+                  }
+                  
                   .file-link { 
                       display: block;
-                      margin: 15px 0;
-                      padding: 20px;
-                      background: #f6f8fa;
+                      margin: 20px 0;
+                      padding: 25px;
+                      background: var(--light-gray);
                       text-decoration: none;
-                      border-radius: 8px;
-                      border-left: 4px solid #0366d6;
-                      transition: background 0.2s;
+                      border-radius: 12px;
+                      border-left: 6px solid var(--primary-color);
+                      transition: all 0.3s ease;
+                      position: relative;
+                      overflow: hidden;
                   }
-                  .file-link:hover { background: #e1f5fe; }
-                  .file-title { font-weight: 600; font-size: 1.1rem; color: #24292f; }
-                  .file-desc { color: #586069; margin-top: 5px; }
+                  
+                  .file-link:hover { 
+                      background: #e3f2fd;
+                      transform: translateY(-2px);
+                      box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+                  }
+                  
+                  .file-title { 
+                      font-weight: 700;
+                      font-size: 1.3rem;
+                      color: var(--text-color);
+                      margin-bottom: 8px;
+                      display: flex;
+                      align-items: center;
+                      gap: 10px;
+                  }
+                  
+                  .file-desc { 
+                      color: var(--muted-color);
+                      font-size: 1rem;
+                      line-height: 1.5;
+                  }
+                  
+                  .status-info {
+                      background: linear-gradient(135deg, #e3f2fd, #bbdefb);
+                      padding: 25px;
+                      border-radius: 12px;
+                      margin: 30px 0;
+                      border-left: 6px solid var(--primary-color);
+                  }
+                  
+                  .status-info h3 {
+                      color: var(--primary-color);
+                      margin-bottom: 15px;
+                      font-size: 1.2rem;
+                  }
+                  
+                  .features {
+                      display: grid;
+                      grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+                      gap: 20px;
+                      margin: 30px 0;
+                  }
+                  
+                  .feature {
+                      background: white;
+                      padding: 20px;
+                      border-radius: 8px;
+                      border: 2px solid var(--border-color);
+                      text-align: center;
+                  }
+                  
+                  .feature h4 {
+                      color: var(--primary-color);
+                      margin-bottom: 10px;
+                  }
+                  
+                  @media (max-width: 768px) {
+                      body { padding: 20px; }
+                      .container { padding: 30px; }
+                      h1 { font-size: 2rem; }
+                      .features { grid-template-columns: 1fr; }
+                  }
               </style>
           </head>
           <body>
               <div class="container">
-                  <h1>📊 Repository Compliance Reports</h1>
-                  <p>Access the latest compliance data and reports for ${{ env.TARGET_ORG }} organization.</p>
+                  <h1>📊 Repository Compliance Dashboard</h1>
+                  <p class="subtitle">Automated governance and compliance monitoring</p>
+                  
+                  <div class="status-info">
+                      <h3>🚀 Latest Features</h3>
+                      <div class="features">
+                          <div class="feature">
+                              <h4>👥 Auto-Assignment</h4>
+                              <p>Issues automatically assigned to responsible users</p>
+                          </div>
+                          <div class="feature">
+                              <h4>🎯 Smart Detection</h4>
+                              <p>Identifies admins, maintainers, and active contributors</p>
+                          </div>
+                          <div class="feature">
+                              <h4>📈 Real-time Monitoring</h4>
+                              <p>Daily scans with comprehensive reporting</p>
+                          </div>
+                      </div>
+                  </div>
                   
                   <a href="index.html" class="file-link">
-                      <div class="file-title">📈 Interactive Compliance Dashboard</div>
-                      <div class="file-desc">Visual dashboard with charts, metrics, and repository details</div>
+                      <div class="file-title">
+                          📈 Interactive Compliance Dashboard
+                      </div>
+                      <div class="file-desc">
+                          Visual dashboard with charts, metrics, compliance rates, and detailed repository analysis.
+                          Includes auto-assignment status and responsible party information.
+                      </div>
                   </a>
                   
                   <a href="compliance-report.json" class="file-link">
-                      <div class="file-title">📄 Detailed JSON Report</div>
-                      <div class="file-desc">Machine-readable compliance data for automation and analysis</div>
+                      <div class="file-title">
+                          📄 Detailed JSON Report
+                      </div>
+                      <div class="file-desc">
+                          Machine-readable compliance data including violation details, assignment information,
+                          and repository metadata for automation and analysis.
+                      </div>
                   </a>
                   
-                  <a href="https://github.com/${{ env.TARGET_ORG }}/admin-repo-compliance/actions" class="file-link" target="_blank">
-                      <div class="file-title">🔧 Workflow Runs</div>
-                      <div class="file-desc">View GitHub Actions workflow history and logs</div>
+                  <a href="https://github.com/$TARGET_ORG/admin-repo-compliance/actions" class="file-link" target="_blank">
+                      <div class="file-title">
+                          🔧 Workflow Runs & Logs
+                      </div>
+                      <div class="file-desc">
+                          View GitHub Actions workflow history, execution logs, and troubleshoot any issues
+                          with the compliance scanning process.
+                      </div>
                   </a>
                   
-                  <a href="https://github.com/${{ env.TARGET_ORG }}/admin-repo-compliance/issues" class="file-link" target="_blank">
-                      <div class="file-title">📋 Compliance Issues</div>
-                      <div class="file-desc">Track and manage repository compliance issues</div>
+                  <a href="https://github.com/$TARGET_ORG/admin-repo-compliance/issues" class="file-link" target="_blank">
+                      <div class="file-title">
+                          📋 Compliance Issues & Assignment
+                      </div>
+                      <div class="file-desc">
+                          Track and manage repository compliance issues with automatic assignment to responsible
+                          parties. View progress and completion status.
+                      </div>
                   </a>
               </div>
           </body>
@@ -199,14 +362,23 @@ jobs:
       - name: Output Results
         if: success() && github.ref == 'refs/heads/main'
         run: |
-          echo "🎉 Compliance check completed successfully!"
+          echo "🎉 Compliance check with auto-assignment completed successfully!"
           echo ""
           echo "📊 Dashboard: ${{ steps.deployment.outputs.page_url }}"
           echo "📄 Reports: ${{ steps.deployment.outputs.page_url }}reports.html"
           echo "📋 JSON Data: ${{ steps.deployment.outputs.page_url }}compliance-report.json"
+          echo "👥 Auto-assignment: $ENABLE_AUTO_ASSIGNMENT"
+          echo "🏢 Organization: $TARGET_ORG"
+          echo ""
+          echo "📋 Quick Links:"
+          echo "• Dashboard: https://$TARGET_ORG.github.io/admin-repo-compliance/"
+          echo "• Reports: https://$TARGET_ORG.github.io/admin-repo-compliance/reports.html"
+          echo "• Issues: https://github.com/$TARGET_ORG/admin-repo-compliance/issues"
           
           # Set outputs for other workflows if needed
           echo "dashboard_url=${{ steps.deployment.outputs.page_url }}" >> $GITHUB_OUTPUT
+          echo "org_name=$TARGET_ORG" >> $GITHUB_OUTPUT
+          echo "auto_assignment_enabled=$ENABLE_AUTO_ASSIGNMENT" >> $GITHUB_OUTPUT
       
       - name: Handle Failure - Create Labels
         if: failure()
@@ -239,6 +411,12 @@ jobs:
             --description "Automated compliance summary reports" \
             --force 2>/dev/null || echo "Label compliance-report already exists or creation failed"
           
+          # Create auto-assignment label
+          gh label create "auto-assigned" \
+            --color "0366d6" \
+            --description "Automatically assigned compliance issues" \
+            --force 2>/dev/null || echo "Label auto-assigned already exists or creation failed"
+          
           echo "Label creation completed"
       
       - name: Create Failure Issue
@@ -251,29 +429,36 @@ jobs:
           # Create issue with proper escaping
           gh issue create \
             --title "🚨 Repository Compliance Check Failed - $(date +%Y-%m-%d)" \
-            --body "The automated repository compliance check failed on $(date).
+            --body "The automated repository compliance check with auto-assignment failed on $(date).
 
           ## 🔍 Details
           - **Workflow Run**: [View Details](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
-          - **Organization**: ${{ env.TARGET_ORG }}
-          - **Dry Run**: ${{ env.DRY_RUN }}
+          - **Organization**: $TARGET_ORG (auto-detected)
+          - **Dry Run**: $DRY_RUN
+          - **Auto-Assignment**: $ENABLE_AUTO_ASSIGNMENT
           - **Failed At**: $(date '+%Y-%m-%d %H:%M:%S')
           
           ## 🛠️ Troubleshooting
           1. Check the workflow run logs for specific error messages
           2. Verify that the ORG_COMPLIANCE_TOKEN has proper permissions:
-             - repo scope for repository access
-             - read:org scope for organization access
+             - **repo** scope for repository access
+             - **read:org** scope for organization access
+             - **read:user** scope for user information (needed for assignment)
           3. Ensure you are a member of the target organization
           4. Check if the organization has any access restrictions
+          5. Verify auto-assignment is working correctly
           
           ## 🔄 Next Steps
           - Review the workflow logs
-          - Fix any identified issues
+          - Check token permissions and scopes
+          - Test with dry_run=true first
           - Re-run the workflow manually
           
+          ## 👥 Auto-Assignment Status
+          Auto-assignment was **$ENABLE_AUTO_ASSIGNMENT** for this run.
+          
           ---
-          *This issue was created automatically by the Repository Compliance Checker*" \
+          *This issue was created automatically by the Repository Compliance Checker with Auto-Assignment*" \
             --label "compliance-failure,automated" || \
           gh issue create \
             --title "🚨 Repository Compliance Check Failed - $(date +%Y-%m-%d)" \
