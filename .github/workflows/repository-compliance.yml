@@ -1,6 +1,8 @@
 name: Repository Compliance Checker with Auto-Assignment
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       dry_run:
